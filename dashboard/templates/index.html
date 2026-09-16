@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ransomware Defense Monitor</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:      #0a0a0f;
+      --surface: #12121a;
+      --border:  rgba(255,255,255,0.08);
+      --normal:  #00ff88;
+      --warning: #ffcc00;
+      --alert:   #ff3333;
+      --cyan:    #00e5ff;
+      --violet:  #bf5fff;
+      --grid:    rgba(255,255,255,0.15);
+      --text:    #e0e0e0;
+      --dim:     rgba(224,224,224,0.45);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+    }
+
+    /* ── Hero Banner ───────────────────────────────────────────── */
+    #hero {
+      width: 100%;
+      padding: 18px 24px;
+      text-align: center;
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      transition: background 0.4s;
+    }
+    #hero.normal  { color: var(--normal); }
+    #hero.alert   { color: var(--alert); animation: blink 0.8s step-start infinite; }
+    @keyframes blink { 50% { opacity: 0.3; } }
+    #hero .meta   { font-size: 0.85rem; font-weight: 400; opacity: 0.7; margin-top: 4px; }
+
+    /* ── Layout ────────────────────────────────────────────────── */
+    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+
+    /* ── Charts 2×2 grid ───────────────────────────────────────── */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .chart-card h3 {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--cyan);
+      margin-bottom: 10px;
+    }
+    canvas { width: 100% !important; }
+
+    /* ── Tables ────────────────────────────────────────────────── */
+    .table-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 20px;
+      overflow-x: auto;
+    }
+    .table-card h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--violet);
+      margin-bottom: 12px;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      padding: 6px 10px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--dim);
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 7px 10px;
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      font-size: 0.82rem;
+      border-bottom: 1px solid var(--border);
+    }
+    tr.elevated td { background: rgba(255,204,0,0.08); }
+    tr.alerted  td { background: rgba(255,51,51,0.12); }
+    tr.old-alert  { opacity: 0.5; }
+  </style>
+</head>
+<body>
+
+<!-- Hero Banner -->
+<div id="hero" class="normal">
+  <span id="hero-text">● SYSTEM NORMAL</span>
+  <div class="meta" id="hero-meta">&nbsp;</div>
+</div>
+
+<div class="container">
+
+  <!-- Charts -->
+  <div class="charts-grid">
+    <div class="chart-card">
+      <h3>File Events / sec</h3>
+      <canvas id="chartFile"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>Process Spawns / sec</h3>
+      <canvas id="chartSpawn"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>Memory Delta MB / sec</h3>
+      <canvas id="chartMem"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>I/O Bytes / sec</h3>
+      <canvas id="chartIO"></canvas>
+    </div>
+  </div>
+
+  <!-- Process Table -->
+  <div class="table-card">
+    <h2>Live Processes</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>PID</th><th>Name</th><th>State</th>
+          <th>Memory (MB)</th><th>Read B/s</th><th>Write B/s</th>
+        </tr>
+      </thead>
+      <tbody id="proc-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- Alert Log -->
+  <div class="table-card">
+    <h2>Alert Log</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th><th>PID</th><th>Process</th>
+          <th>Trigger</th><th>File /s</th><th>Spawn /s</th>
+          <th>Mem MB/s</th><th>IO MB/s</th>
+        </tr>
+      </thead>
+      <tbody id="alert-tbody"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+// ── Chart setup ────────────────────────────────────────────────────────────
+const MAX_POINTS = 60;
+const CHART_DEFAULTS = {
+  type: 'line',
+  options: {
+    animation: false,
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#888', maxTicksLimit: 6 }, grid: { color: 'rgba(255,255,255,0.05)' } },
+      y: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.08)' }, beginAtZero: true }
+    }
+  }
+};
+
+function makeChart(id, color) {
+  const ctx = document.getElementById(id).getContext('2d');
+  const labels = Array(MAX_POINTS).fill('');
+  const data   = Array(MAX_POINTS).fill(0);
+  return new Chart(ctx, {
+    ...CHART_DEFAULTS,
+    data: {
+      labels,
+      datasets: [{
+        data,
+        borderColor: color,
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: { target: 'origin', above: color + '18' }
+      }]
+    }
+  });
+}
+
+const charts = {
+  file:  makeChart('chartFile',  '#00e5ff'),
+  spawn: makeChart('chartSpawn', '#bf5fff'),
+  mem:   makeChart('chartMem',   '#ffcc00'),
+  io:    makeChart('chartIO',    '#00ff88'),
+};
+
+function pushPoint(chart, value) {
+  chart.data.labels.push('');
+  chart.data.labels.shift();
+  chart.data.datasets[0].data.push(value);
+  chart.data.datasets[0].data.shift();
+  chart.update('none');
+}
+
+// ── Hero banner ────────────────────────────────────────────────────────────
+function updateHero(data) {
+  const hero = document.getElementById('hero');
+  const txt  = document.getElementById('hero-text');
+  const meta = document.getElementById('hero-meta');
+  if (data.status === 'alert') {
+    hero.className = 'alert';
+    txt.textContent = '⚠ ALERT DETECTED';
+    meta.textContent = `PID ${data.alert_pid} — ${data.alert_reason}`;
+  } else {
+    hero.className = 'normal';
+    txt.textContent = '● SYSTEM NORMAL';
+    meta.textContent = data.timestamp || '';
+  }
+}
+
+// ── Process table ──────────────────────────────────────────────────────────
+function updateProcessTable(processes) {
+  const tbody = document.getElementById('proc-tbody');
+  tbody.innerHTML = '';
+  (processes || []).slice(0, 30).forEach(p => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${p.pid}</td>
+      <td>${p.name}</td>
+      <td>${p.state}</td>
+      <td>${(p.vsize_mb || 0).toFixed(1)}</td>
+      <td>${(p.read_bytes  || 0).toLocaleString()}</td>
+      <td>${(p.write_bytes || 0).toLocaleString()}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Alert log ──────────────────────────────────────────────────────────────
+let knownAlerts = new Set();
+function updateAlertLog(alerts) {
+  const tbody = document.getElementById('alert-tbody');
+  const now   = Date.now();
+  alerts.slice().reverse().forEach(a => {
+    const key = a.timestamp + a.pid;
+    if (knownAlerts.has(key)) return;
+    knownAlerts.add(key);
+    const tr = document.createElement('tr');
+    tr.dataset.ts = new Date(a.timestamp).getTime();
+    tr.innerHTML = `
+      <td>${a.timestamp}</td>
+      <td>${a.pid}</td>
+      <td>${a.proc_name || ''}</td>
+      <td>${a.trigger_reason}</td>
+      <td>${parseFloat(a.file_events_per_sec || 0).toFixed(1)}</td>
+      <td>${parseFloat(a.spawns_per_sec      || 0).toFixed(1)}</td>
+      <td>${parseFloat(a.mem_delta_mb_per_sec || 0).toFixed(1)}</td>
+      <td>${(parseFloat(a.io_bytes_per_sec || 0) / 1048576).toFixed(2)}</td>`;
+    tbody.prepend(tr);
+  });
+  // Dim rows older than 30 s
+  Array.from(tbody.rows).forEach(row => {
+    const age = now - parseInt(row.dataset.ts || 0, 10);
+    row.classList.toggle('old-alert', age > 30000);
+  });
+}
+
+// ── Main polling loop ──────────────────────────────────────────────────────
+async function fetchAndUpdate() {
+  try {
+    const [mRes, aRes] = await Promise.all([
+      fetch('/api/metrics'),
+      fetch('/api/alerts'),
+    ]);
+    const metrics = await mRes.json();
+    const alerts  = await aRes.json();
+
+    updateHero(metrics);
+    const m = metrics.metrics || {};
+    pushPoint(charts.file,  m.file_events_per_sec   || 0);
+    pushPoint(charts.spawn, m.spawns_per_sec         || 0);
+    pushPoint(charts.mem,   m.mem_delta_mb_per_sec   || 0);
+    pushPoint(charts.io,    (m.io_bytes_per_sec || 0) / 1048576);
+    updateProcessTable(metrics.processes);
+    updateAlertLog(alerts);
+  } catch (e) {
+    // Network error — keep previous state
+  }
+}
+
+fetchAndUpdate();
+setInterval(fetchAndUpdate, 1000);
+</script>
+</body>
+</html>
