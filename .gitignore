@@ -1,0 +1,26 @@
+# Build outputs
+bin/
+build/
+*.o
+*.a
+
+# Sandbox contents (directory tracked, contents ignored)
+test_env/*
+!test_env/.gitkeep
+
+# Log contents (directory tracked, contents ignored)
+logs/*
+!logs/.gitkeep
+
+# ML artifacts
+ml/model.pkl
+ml/features.csv
+__pycache__/
+*.pyc
+*.pyo
+.hypothesis/
+
+# Editor
+.vscode/
+*.swp
+*~
